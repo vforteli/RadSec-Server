@@ -99,28 +99,49 @@ namespace Flexinets.Radius
                 try
                 {
                     _log.Debug($"Connection from {client.Client.RemoteEndPoint}");
-                    var stream = client.GetStream();
 
-                    while (true)
+                    // todo figure out of this is a known client
+                    // todo add tls and certificate authentication...
+                    if (_packetHandlers.TryGetValue(IPAddress.Parse("127.0.0.1"), out var handler))
                     {
-                        var packetHeaderBytes = new Byte[4];
-                        var i = stream.Read(packetHeaderBytes, 0, 4);
-                        if (i == 0)
+                        _log.Debug($"Handling client with {handler.packetHandler.GetType()}");
+
+                        var stream = client.GetStream();
+                        while (true)
                         {
-                            break;
+                            if (!TryGetPacketFromStream( stream, out var requestPacket, _dictionary))
+                            {
+                                break;
+                            }
+
+                            DumpPacket(requestPacket);
+
+                            
+
+                            var sw = Stopwatch.StartNew();
+                            var responsePacket = handler.packetHandler.HandlePacket(requestPacket);
+                            sw.Stop();
+                            _log.Debug($"Id={responsePacket.Identifier}, Received {responsePacket.Code} from handler in {sw.ElapsedMilliseconds}ms");
+                            if (sw.ElapsedMilliseconds >= 5000)
+                            {
+                                _log.Warn($"Slow response for Id {responsePacket.Identifier}, check logs");
+                            }
+
+                            if (requestPacket.Attributes.ContainsKey("Proxy-State"))
+                            {
+                                responsePacket.Attributes.Add("Proxy-State", requestPacket.Attributes.SingleOrDefault(o => o.Key == "Proxy-State").Value);
+                            }
+
+                            var responsePacketBytes = responsePacket.GetBytes(_dictionary);
+                            stream.Write(responsePacketBytes, 0, responsePacketBytes.Length);                            
                         }
 
-                        var packetLength = BitConverter.ToUInt16(packetHeaderBytes.Skip(2).Take(2).Reverse().ToArray(), 0);
-                        var packetContentBytes = new Byte[packetLength - 4];
-                        stream.Read(packetContentBytes, 0, packetContentBytes.Length);
-
-
-                        var requestPacket = RadiusPacket.Parse(packetHeaderBytes.Concat(packetContentBytes).ToArray(), _dictionary, Encoding.UTF8.GetBytes("secret"));
-                        DumpPacket(requestPacket);
-
+                        _log.Debug($"Connection closed to {client.Client.RemoteEndPoint}");
                     }
-
-                    _log.Debug($"Connection closed to {client.Client.RemoteEndPoint}");
+                    else
+                    {
+                        _log.Error($"No packet handler found for remote endpoint {client.Client.RemoteEndPoint}");
+                    }
                 }
                 catch (IOException ioex)
                 {
@@ -131,6 +152,33 @@ namespace Flexinets.Radius
                     _log.Error("Something went wrong", ex);
                 }
             }
+        }
+
+
+        /// <summary>
+        /// Tries to get a packet from the stream. Returns true if successful
+        /// Returns false if no packet could be parsed or stream is empty
+        /// </summary>
+        /// <param name="stream"></param>
+        /// <param name="packet"></param>
+        /// <param name="dictionary"></param>
+        /// <returns></returns>
+        private static Boolean TryGetPacketFromStream(NetworkStream stream, out IRadiusPacket packet, RadiusDictionary dictionary)
+        {
+            packet = null;
+            var packetHeaderBytes = new Byte[4];
+            var i = stream.Read(packetHeaderBytes, 0, 4);
+            if (i == 0)
+            {
+                return false;
+            }
+
+            var packetLength = BitConverter.ToUInt16(packetHeaderBytes.Skip(2).Take(2).Reverse().ToArray(), 0);
+            var packetContentBytes = new Byte[packetLength - 4];
+            stream.Read(packetContentBytes, 0, packetContentBytes.Length);
+
+            packet = RadiusPacket.Parse(packetHeaderBytes.Concat(packetContentBytes).ToArray(), dictionary, Encoding.UTF8.GetBytes("secret"));
+            return true;
         }
 
 
