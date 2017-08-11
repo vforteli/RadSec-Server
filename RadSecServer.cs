@@ -70,8 +70,30 @@ namespace Flexinets.Radius
         {
             _log.Info($"Starting Radius RadSec server on {_server.LocalEndpoint}");
             _server.Start();
-            _server.BeginAcceptTcpClient(ReceiveCallback, null);
+            var receiveTask = StartReceiveLoopAsync();
             _log.Info("Server started");
+        }
+
+
+        /// <summary>
+        /// Start the loop used for receiving packets
+        /// </summary>
+        /// <returns></returns>
+        private async Task StartReceiveLoopAsync()
+        {
+            while (_server.Server.IsBound)
+            {
+                try
+                {
+                    var client = await _server.AcceptTcpClientAsync();
+                    var task = Task.Factory.StartNew(() => HandleClient(client), TaskCreationOptions.LongRunning);
+                }
+                catch (ObjectDisposedException) { } // Thrown when server is stopped while still receiving. This can be safely ignored
+                catch (Exception ex)
+                {
+                    _log.Fatal("Something went wrong accepting client", ex);
+                }
+            }
         }
 
 
@@ -90,67 +112,59 @@ namespace Flexinets.Radius
         /// Receive packets
         /// </summary>
         /// <param name="ar"></param>
-        private void ReceiveCallback(IAsyncResult ar)
+        private void HandleClient(TcpClient client)
         {
-            using (var client = _server.EndAcceptTcpClient(ar))
+            try
             {
-                _server.BeginAcceptTcpClient(ReceiveCallback, null);
+                _log.Debug($"Connection from {client.Client.RemoteEndPoint}");
 
-                try
+                // todo figure out of this is a known client
+                // todo add tls and certificate authentication...
+                if (_packetHandlers.TryGetValue(IPAddress.Parse("127.0.0.1"), out var handler))
                 {
-                    _log.Debug($"Connection from {client.Client.RemoteEndPoint}");
+                    _log.Debug($"Handling client with {handler.packetHandler.GetType()}");
 
-                    // todo figure out of this is a known client
-                    // todo add tls and certificate authentication...
-                    if (_packetHandlers.TryGetValue(IPAddress.Parse("127.0.0.1"), out var handler))
+                    var stream = client.GetStream();
+                    while (TryGetPacketFromStream(stream, out var requestPacket, _dictionary))
                     {
-                        _log.Debug($"Handling client with {handler.packetHandler.GetType()}");
+                        _log.Debug(GetPacketDump(requestPacket));
 
-                        var stream = client.GetStream();
-                        while (true)
+                        var sw = Stopwatch.StartNew();
+                        var responsePacket = handler.packetHandler.HandlePacket(requestPacket);
+                        sw.Stop();
+                        _log.Debug($"Id={responsePacket.Identifier}, Received {responsePacket.Code} from handler in {sw.ElapsedMilliseconds}ms");
+                        if (sw.ElapsedMilliseconds >= 5000)
                         {
-                            if (!TryGetPacketFromStream( stream, out var requestPacket, _dictionary))
-                            {
-                                break;
-                            }
-
-                            DumpPacket(requestPacket);
-
-                            
-
-                            var sw = Stopwatch.StartNew();
-                            var responsePacket = handler.packetHandler.HandlePacket(requestPacket);
-                            sw.Stop();
-                            _log.Debug($"Id={responsePacket.Identifier}, Received {responsePacket.Code} from handler in {sw.ElapsedMilliseconds}ms");
-                            if (sw.ElapsedMilliseconds >= 5000)
-                            {
-                                _log.Warn($"Slow response for Id {responsePacket.Identifier}, check logs");
-                            }
-
-                            if (requestPacket.Attributes.ContainsKey("Proxy-State"))
-                            {
-                                responsePacket.Attributes.Add("Proxy-State", requestPacket.Attributes.SingleOrDefault(o => o.Key == "Proxy-State").Value);
-                            }
-
-                            var responsePacketBytes = responsePacket.GetBytes(_dictionary);
-                            stream.Write(responsePacketBytes, 0, responsePacketBytes.Length);                            
+                            _log.Warn($"Slow response for Id {responsePacket.Identifier}, check logs");
                         }
 
-                        _log.Debug($"Connection closed to {client.Client.RemoteEndPoint}");
+                        if (requestPacket.Attributes.ContainsKey("Proxy-State"))
+                        {
+                            responsePacket.Attributes.Add("Proxy-State", requestPacket.Attributes.SingleOrDefault(o => o.Key == "Proxy-State").Value);
+                        }
+
+                        var responsePacketBytes = responsePacket.GetBytes(_dictionary);
+                        stream.Write(responsePacketBytes, 0, responsePacketBytes.Length);
                     }
-                    else
-                    {
-                        _log.Error($"No packet handler found for remote endpoint {client.Client.RemoteEndPoint}");
-                    }
+
+                    _log.Debug($"Connection closed to {client.Client.RemoteEndPoint}");
                 }
-                catch (IOException ioex)
+                else
                 {
-                    _log.Warn("oops", ioex);
+                    _log.Error($"No packet handler found for remote endpoint {client.Client.RemoteEndPoint}");
                 }
-                catch (Exception ex)
-                {
-                    _log.Error("Something went wrong", ex);
-                }
+            }
+            catch (IOException ioex)
+            {
+                _log.Warn("oops", ioex);
+            }
+            catch (Exception ex)
+            {
+                _log.Error("Something went wrong", ex);
+            }
+            finally
+            {
+                client?.Dispose();
             }
         }
 
@@ -165,60 +179,53 @@ namespace Flexinets.Radius
         /// <returns></returns>
         private static Boolean TryGetPacketFromStream(NetworkStream stream, out IRadiusPacket packet, RadiusDictionary dictionary)
         {
-            packet = null;
             var packetHeaderBytes = new Byte[4];
             var i = stream.Read(packetHeaderBytes, 0, 4);
-            if (i == 0)
+            if (i != 0)
             {
-                return false;
+                try
+                {
+                    var packetLength = BitConverter.ToUInt16(packetHeaderBytes.Reverse().ToArray(), 0);
+                    var packetContentBytes = new Byte[packetLength - 4];
+                    stream.Read(packetContentBytes, 0, packetContentBytes.Length);
+
+                    packet = RadiusPacket.Parse(packetHeaderBytes.Concat(packetContentBytes).ToArray(), dictionary, Encoding.UTF8.GetBytes("secret"));
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    _log.Warn("Unable to parse packet from stream", ex);
+                }
             }
 
-            var packetLength = BitConverter.ToUInt16(packetHeaderBytes.Skip(2).Take(2).Reverse().ToArray(), 0);
-            var packetContentBytes = new Byte[packetLength - 4];
-            stream.Read(packetContentBytes, 0, packetContentBytes.Length);
-
-            packet = RadiusPacket.Parse(packetHeaderBytes.Concat(packetContentBytes).ToArray(), dictionary, Encoding.UTF8.GetBytes("secret"));
-            return true;
+            packet = null;
+            return false;
         }
 
 
         /// <summary>
-        /// Log packet bytes for debugging
-        /// </summary>
-        /// <param name="packetBytes"></param>
-        private static void DumpPacketBytes(Byte[] packetBytes)
-        {
-            try
-            {
-                _log.Debug(packetBytes.ToHexString());
-            }
-            catch (Exception)
-            {
-                _log.Warn("duh");
-            }
-        }
-
-
-        /// <summary>
-        /// Dump the packet attributes to the log
+        /// Get a nicely formatted packet attribute dump
         /// </summary>
         /// <param name="packet"></param>
-        private static void DumpPacket(IRadiusPacket packet)
+        private static String GetPacketDump(IRadiusPacket packet)
         {
             var sb = new StringBuilder();
-            sb.AppendLine($"Packet dump for {packet.Identifier}:");
-            foreach (var attribute in packet.Attributes)
+            if (packet != null)
             {
-                if (attribute.Key == "User-Password")
+                sb.AppendLine($"Packet dump for {packet.Identifier}:");
+                foreach (var attribute in packet.Attributes)
                 {
-                    sb.AppendLine($"{attribute.Key} length : {attribute.Value.First().ToString().Length}");
-                }
-                else
-                {
-                    attribute.Value.ForEach(o => sb.AppendLine($"{attribute.Key} : {o} [{o.GetType()}]"));
+                    if (attribute.Key == "User-Password")
+                    {
+                        sb.AppendLine($"{attribute.Key} length : {attribute.Value.First().ToString().Length}");
+                    }
+                    else
+                    {
+                        attribute.Value.ForEach(o => sb.AppendLine($"{attribute.Key} : {o} [{o.GetType()}]"));
+                    }
                 }
             }
-            _log.Debug(sb.ToString());
+            return sb.ToString();
         }
     }
 }
