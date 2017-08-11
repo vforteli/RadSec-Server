@@ -8,7 +8,6 @@ using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
 
 namespace Flexinets.Radius
@@ -17,8 +16,7 @@ namespace Flexinets.Radius
     {
         private static readonly ILog _log = LogManager.GetLogger(typeof(RadSecServer));
         private readonly TcpListener _server;
-        private readonly RadiusDictionary _dictionary;
-        private Int32 _concurrentHandlerCount = 0;
+        private readonly RadiusDictionary _dictionary;        
         private readonly Dictionary<IPAddress, (IPacketHandler packetHandler, String secret)> _packetHandlers = new Dictionary<IPAddress, (IPacketHandler, String)>();
 
 
