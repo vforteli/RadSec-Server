@@ -16,7 +16,7 @@ namespace Flexinets.Radius
     {
         private static readonly ILog _log = LogManager.GetLogger(typeof(RadSecServer));
         private readonly TcpListener _server;
-        private readonly RadiusDictionary _dictionary;        
+        private readonly RadiusDictionary _dictionary;
         private readonly Dictionary<IPAddress, (IPacketHandler packetHandler, String secret)> _packetHandlers = new Dictionary<IPAddress, (IPacketHandler, String)>();
 
 
@@ -68,16 +68,16 @@ namespace Flexinets.Radius
         {
             _log.Info($"Starting Radius RadSec server on {_server.LocalEndpoint}");
             _server.Start();
-            var receiveTask = StartReceiveLoopAsync();
+            var receiveTask = StartAcceptingClientsAsync();
             _log.Info("Server started");
         }
 
 
         /// <summary>
-        /// Start the loop used for receiving packets
+        /// Start the loop used for accepting clients
         /// </summary>
         /// <returns></returns>
-        private async Task StartReceiveLoopAsync()
+        private async Task StartAcceptingClientsAsync()
         {
             while (_server.Server.IsBound)
             {
@@ -123,7 +123,7 @@ namespace Flexinets.Radius
                     _log.Debug($"Handling client with {handler.packetHandler.GetType()}");
 
                     var stream = client.GetStream();
-                    while (TryGetPacketFromStream(stream, out var requestPacket, _dictionary))
+                    while (RadiusPacket.TryParsePacketFromStream(stream, out var requestPacket, _dictionary, Encoding.UTF8.GetBytes(handler.secret)))
                     {
                         _log.Debug(GetPacketDump(requestPacket));
 
@@ -131,10 +131,6 @@ namespace Flexinets.Radius
                         var responsePacket = handler.packetHandler.HandlePacket(requestPacket);
                         sw.Stop();
                         _log.Debug($"Id={responsePacket.Identifier}, Received {responsePacket.Code} from handler in {sw.ElapsedMilliseconds}ms");
-                        if (sw.ElapsedMilliseconds >= 5000)
-                        {
-                            _log.Warn($"Slow response for Id {responsePacket.Identifier}, check logs");
-                        }
 
                         if (requestPacket.Attributes.ContainsKey("Proxy-State"))
                         {
@@ -164,40 +160,6 @@ namespace Flexinets.Radius
             {
                 client?.Dispose();
             }
-        }
-
-
-        /// <summary>
-        /// Tries to get a packet from the stream. Returns true if successful
-        /// Returns false if no packet could be parsed or stream is empty
-        /// </summary>
-        /// <param name="stream"></param>
-        /// <param name="packet"></param>
-        /// <param name="dictionary"></param>
-        /// <returns></returns>
-        private static Boolean TryGetPacketFromStream(NetworkStream stream, out IRadiusPacket packet, RadiusDictionary dictionary)
-        {
-            var packetHeaderBytes = new Byte[4];
-            var i = stream.Read(packetHeaderBytes, 0, 4);
-            if (i != 0)
-            {
-                try
-                {
-                    var packetLength = BitConverter.ToUInt16(packetHeaderBytes.Reverse().ToArray(), 0);
-                    var packetContentBytes = new Byte[packetLength - 4];
-                    stream.Read(packetContentBytes, 0, packetContentBytes.Length);
-
-                    packet = RadiusPacket.Parse(packetHeaderBytes.Concat(packetContentBytes).ToArray(), dictionary, Encoding.UTF8.GetBytes("secret"));
-                    return true;
-                }
-                catch (Exception ex)
-                {
-                    _log.Warn("Unable to parse packet from stream", ex);
-                }
-            }
-
-            packet = null;
-            return false;
         }
 
 
