@@ -6,7 +6,10 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -116,14 +119,18 @@ namespace Flexinets.Radius
             {
                 _log.Debug($"Connection from {client.Client.RemoteEndPoint}");
 
+                // todo refactor all this and validate client certificate
+                var sslStream = new SslStream(client.GetStream(), false);
+                var serverCertificate = new  X509Certificate("certpath", "certpassword");
+                sslStream.AuthenticateAsServer(serverCertificate, false, SslProtocols.Tls12, false);
+
                 // todo figure out of this is a known client
-                // todo add tls and certificate authentication...
                 if (_packetHandlers.TryGetValue(IPAddress.Parse("127.0.0.1"), out var handler))
                 {
                     _log.Debug($"Handling client with {handler.packetHandler.GetType()}");
 
-                    var stream = client.GetStream();
-                    while (RadiusPacket.TryParsePacketFromStream(stream, out var requestPacket, _dictionary, Encoding.UTF8.GetBytes(handler.secret)))
+                    //var stream = client.GetStream();
+                    while (RadiusPacket.TryParsePacketFromStream(sslStream, out var requestPacket, _dictionary, Encoding.UTF8.GetBytes(handler.secret)))
                     {
                         _log.Debug(GetPacketDump(requestPacket));
 
@@ -138,7 +145,7 @@ namespace Flexinets.Radius
                         }
 
                         var responsePacketBytes = responsePacket.GetBytes(_dictionary);
-                        stream.Write(responsePacketBytes, 0, responsePacketBytes.Length);
+                        sslStream.Write(responsePacketBytes, 0, responsePacketBytes.Length);
                     }
 
                     _log.Debug($"Connection closed to {client.Client.RemoteEndPoint}");
