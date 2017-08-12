@@ -22,19 +22,22 @@ namespace Flexinets.Radius
         private readonly RadiusDictionary _dictionary;
         private readonly Dictionary<String, (IPacketHandler packetHandler, String secret)> _clients = new Dictionary<String, (IPacketHandler, String)>();
         private readonly X509Certificate _serverCertificate;
+        private readonly Boolean _trustClientCertificate;
 
 
         /// <summary>
         /// Create a new server on endpoint
         /// </summary>
         /// <param name="localEndpoint"></param>
-        /// <param name="dictionary"></param>
-        /// <param name="serverType"></param>
-        public RadSecServer(IPEndPoint localEndpoint, X509Certificate serverCertificate, RadiusDictionary dictionary)
+        /// <param name="serverCertificate"></param>
+        /// <param name="dictionary"></param>        
+        /// <param name="trustClientCertificate">If set to true, client certificates will not be validated. This can be useful for testing with self signed certificates</param>
+        public RadSecServer(IPEndPoint localEndpoint, X509Certificate serverCertificate, RadiusDictionary dictionary, Boolean trustClientCertificate = false)
         {
             _server = new TcpListener(localEndpoint);
             _serverCertificate = serverCertificate;
             _dictionary = dictionary;
+            _trustClientCertificate = trustClientCertificate;
         }
 
 
@@ -157,9 +160,9 @@ namespace Flexinets.Radius
             }
         }
 
-        
+
         /// <summary>
-        /// Validate client
+        /// Validate client certificate
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="certificate"></param>
@@ -169,9 +172,8 @@ namespace Flexinets.Radius
         private Boolean ValidateClientCertificate(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors sslPolicyErrors)
         {
             _log.Debug($"Validating certificate with hash: {certificate.GetCertHashString()}");
-            // todo obviously this is completely daft, but ok for testing           
             // todo figure out what authentication should be based on, and if CA certificate needs to be installed PKI etc...
-            return _clients.ContainsKey(certificate.GetCertHashString());
+            return _trustClientCertificate || sslPolicyErrors == SslPolicyErrors.None;
         }
 
 
