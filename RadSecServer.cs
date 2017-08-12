@@ -20,7 +20,8 @@ namespace Flexinets.Radius
         private static readonly ILog _log = LogManager.GetLogger(typeof(RadSecServer));
         private readonly TcpListener _server;
         private readonly RadiusDictionary _dictionary;
-        private readonly Dictionary<IPAddress, (IPacketHandler packetHandler, String secret)> _packetHandlers = new Dictionary<IPAddress, (IPacketHandler, String)>();
+        private readonly Dictionary<String, (IPacketHandler packetHandler, String secret)> _clients = new Dictionary<String, (IPacketHandler, String)>();
+        private readonly X509Certificate _serverCertificate;
 
 
         /// <summary>
@@ -29,38 +30,24 @@ namespace Flexinets.Radius
         /// <param name="localEndpoint"></param>
         /// <param name="dictionary"></param>
         /// <param name="serverType"></param>
-        public RadSecServer(IPEndPoint localEndpoint, RadiusDictionary dictionary)
+        public RadSecServer(IPEndPoint localEndpoint, X509Certificate serverCertificate, RadiusDictionary dictionary)
         {
             _server = new TcpListener(localEndpoint);
+            _serverCertificate = serverCertificate;
             _dictionary = dictionary;
         }
 
 
         /// <summary>
-        /// Add packet handler for remote endpoint
+        /// Add packet handler for client
         /// </summary>
-        /// <param name="remoteAddress"></param>
+        /// <param name="certificateThumbprint">SHA1 thumbprint of certificate</param>
         /// <param name="sharedSecret"></param>
         /// <param name="packetHandler"></param>
-        public void AddPacketHandler(IPAddress remoteAddress, String sharedSecret, IPacketHandler packetHandler)
+        public void AddClientPacketHandler(String certificateThumbprint, String sharedSecret, IPacketHandler packetHandler)
         {
             _log.Info($"Adding packet handler of type {packetHandler.GetType()} for remote IP");
-            _packetHandlers.Add(remoteAddress, (packetHandler, sharedSecret));
-        }
-
-
-        /// <summary>
-        /// Add packet handler for multiple remote endpoints
-        /// </summary>
-        /// <param name="remoteAddresses"></param>
-        /// <param name="sharedSecret"></param>
-        /// <param name="packetHandler"></param>
-        public void AddPacketHandler(List<IPAddress> remoteAddresses, String sharedSecret, IPacketHandler packetHandler)
-        {
-            foreach (var address in remoteAddresses)
-            {
-                _packetHandlers.Add(address, (packetHandler, sharedSecret));
-            }
+            _clients.Add(certificateThumbprint, (packetHandler, sharedSecret));
         }
 
 
@@ -119,13 +106,10 @@ namespace Flexinets.Radius
             {
                 _log.Debug($"Connection from {client.Client.RemoteEndPoint}");
 
-                // todo refactor all this and validate client certificate
-                var sslStream = new SslStream(client.GetStream(), false);
-                var serverCertificate = new  X509Certificate("certpath", "certpassword");
-                sslStream.AuthenticateAsServer(serverCertificate, false, SslProtocols.Tls12, false);
+                var sslStream = new SslStream(client.GetStream(), false, ValidateClientCertificate);
+                sslStream.AuthenticateAsServer(_serverCertificate, true, SslProtocols.Tls12, false);
 
-                // todo figure out of this is a known client
-                if (_packetHandlers.TryGetValue(IPAddress.Parse("127.0.0.1"), out var handler))
+                if (_clients.TryGetValue(sslStream.RemoteCertificate.GetCertHashString(), out var handler))
                 {
                     _log.Debug($"Handling client with {handler.packetHandler.GetType()}");
 
@@ -155,6 +139,10 @@ namespace Flexinets.Radius
                     _log.Error($"No packet handler found for remote endpoint {client.Client.RemoteEndPoint}");
                 }
             }
+            catch (AuthenticationException ex)
+            {
+                _log.Warn($"TLS handshake failed for client with {ex.Message}");
+            }
             catch (IOException ioex)
             {
                 _log.Warn("oops", ioex);
@@ -167,6 +155,23 @@ namespace Flexinets.Radius
             {
                 client?.Dispose();
             }
+        }
+
+        
+        /// <summary>
+        /// Validate client
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="certificate"></param>
+        /// <param name="chain"></param>
+        /// <param name="sslPolicyErrors"></param>
+        /// <returns></returns>
+        private Boolean ValidateClientCertificate(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors sslPolicyErrors)
+        {
+            _log.Debug($"Validating certificate with hash: {certificate.GetCertHashString()}");
+            // todo obviously this is completely daft, but ok for testing           
+            // todo figure out what authentication should be based on, and if CA certificate needs to be installed PKI etc...
+            return _clients.ContainsKey(certificate.GetCertHashString());
         }
 
 
