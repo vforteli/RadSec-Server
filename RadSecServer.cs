@@ -116,7 +116,6 @@ namespace Flexinets.Radius
                 {
                     _log.Debug($"Handling client with {handler.packetHandler.GetType()}");
 
-                    //var stream = client.GetStream();
                     while (RadiusPacket.TryParsePacketFromStream(sslStream, out var requestPacket, _dictionary, Encoding.UTF8.GetBytes(handler.secret)))
                     {
                         _log.Debug(GetPacketDump(requestPacket));
