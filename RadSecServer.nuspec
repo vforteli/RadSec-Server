@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package >
+  <metadata>
+    <id>Flexinets.Radius.RadSecServer</id>
+    <version>$version$</version>
+    <title>$title$</title>
+    <authors>Verner Fortelius</authors>
+    <owners>vforteli</owners>
+    <licenseUrl>https://github.com/vforteli/RadSec-Server/blob/master/LICENSE.md</licenseUrl>
+    <projectUrl>https://github.com/vforteli/RadSec-Server</projectUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>RadSec server. Library for hosting a Radsec server (Radius/TLS). Can be run in a Windows Service</description>
+    <releaseNotes>First nuget release</releaseNotes>
+    <copyright>Copyright 2017 Verner Fortelius</copyright>
+    <tags>Radius RadSec RadSec-Server Radius/TLS</tags>
+  </metadata>
+</package>
